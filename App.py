@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # Streamlit UI
 st.set_page_config(layout="wide", page_title="Player Load Analysis")
@@ -15,7 +15,7 @@ def process_file(uploaded_file):
     global data
     try:
         data = pd.read_excel(uploaded_file)
-        required_columns = ["Player Tag", "Session Date", "Total Player Load"]
+        required_columns = ["Player Tag", "Session Date", "Total Player Load", "Tag ID"]
         missing_columns = [col for col in required_columns if col not in data.columns]
         if missing_columns:
             st.error(f"Missing columns: {missing_columns}")
@@ -29,8 +29,8 @@ def process_file(uploaded_file):
         return None
 
 # Function to aggregate data
-def aggregate_data(df):
-    return df.groupby("Player Tag").agg({
+def aggregate_data(df, group_by):
+    return df.groupby(group_by).agg({
         "Total Player Load": "sum",
         "Explosive [seconds]": "sum",
         "Explosive Actions": "sum",
@@ -39,52 +39,53 @@ def aggregate_data(df):
         "Very High Actions": "sum",
     }).reset_index().round(2)
 
-
 # Function to filter data based on selection
-def filter_data(data, time_span, date_filter, player_filter, drill_filter, session_filter):
+def filter_data(data, date_filter, player_filter, drill_filter, session_filter):
     filtered_data = data.copy()
-    today = datetime.today()
 
-    # Apply time span filter
-    if time_span != "All":
-        if time_span == "Last Week":
-            start_date = today - timedelta(weeks=1)
-        elif time_span == "Last Two Weeks":
-            start_date = today - timedelta(weeks=2)
-        elif time_span == "Last Month":
-            start_date = today - timedelta(days=30)
-
-        filtered_data = filtered_data[filtered_data["Session Date"] >= start_date]
-
-    # Apply other filters
-    if date_filter != "All":
-        filtered_data = filtered_data[filtered_data["Session Date"].dt.strftime("%Y-%m-%d") == date_filter]
-    if player_filter != "All":
-        filtered_data = filtered_data[filtered_data["Player Tag"] == player_filter]
-    if drill_filter != "All" and "Drill Name" in filtered_data.columns:
-        filtered_data = filtered_data[filtered_data["Drill Name"] == drill_filter]
-    if session_filter != "All" and "Session Name" in filtered_data.columns:
-        filtered_data = filtered_data[filtered_data["Session Name"] == session_filter]
+    # Apply filters
+    if date_filter and "All" not in date_filter:
+        filtered_data = filtered_data[filtered_data["Session Date"].dt.strftime("%Y-%m-%d").isin(date_filter)]
+    if player_filter and "All" not in player_filter:
+        filtered_data = filtered_data[filtered_data["Player Tag"].isin(player_filter)]
+    if drill_filter and "All" not in drill_filter and "Drill Name" in filtered_data.columns:
+        filtered_data = filtered_data[filtered_data["Drill Name"].isin(drill_filter)]
+    if session_filter and "All" not in session_filter and "Session Name" in filtered_data.columns:
+        filtered_data = filtered_data[filtered_data["Session Name"].isin(session_filter)]
 
     return filtered_data
 
 # Function to plot data dynamically
-def plot_data(data, y_axis, chart_type, color):
-    st.subheader(f"{chart_type} Plot: {y_axis}")
+def plot_data(data, x_axis, y_axis, chart_type, color, aggregated):
+    st.subheader(f"{chart_type} Plot: {x_axis} vs {y_axis}")
 
-    if "Player Tag" in data.columns and y_axis in data.columns and not data.empty:
-        fig, ax = plt.subplots(figsize=(10, 5))
+    if x_axis in data.columns and y_axis in data.columns and not data.empty:
+        fig, ax = plt.subplots(figsize=(20, 6))
+        
+        
+        # Adjust x-axis labels based on aggregation state
+        if aggregated:
+            data["x_label"] = data["Tag ID"].astype(str)  # Only show Tag ID
+            ax.set_xlabel("Tag ID")
+        else:
+            data["x_label"] = data["Tag ID"].astype(str) + " | " + data["Session Date"].dt.strftime("%Y-%m-%d")
+            ax.set_xlabel("Tag ID | Session Date")
+
 
         if chart_type == "Bar":
-            ax.bar(data["Player Tag"], data[y_axis], color=color)
+            ax.bar(data["x_label"], data[y_axis], color=color)
         elif chart_type == "Line":
-            ax.plot(data["Player Tag"], data[y_axis], marker="o", linestyle="-", color=color)
+            ax.plot(data["x_label"], data[y_axis], marker="o", linestyle="-", color=color)
         elif chart_type == "Scatter":
-            ax.scatter(data["Player Tag"], data[y_axis], color=color)
+            ax.scatter(data["x_label"], data[y_axis], color=color)
 
-        ax.set_xlabel("Player Tag")
+        if aggregated:
+            ax.set_xlabel("Tag ID")
+            ax.tick_params(axis='x', rotation=0)
+        else:
+            ax.set_xlabel("Tag ID | Session Date")
+            ax.tick_params(axis='x', rotation=90)
         ax.set_ylabel(y_axis)
-        ax.tick_params(axis='x', rotation=90)
 
         st.pyplot(fig)
     else:
@@ -94,32 +95,36 @@ def plot_data(data, y_axis, chart_type, color):
 if uploaded_file is not None:
     data = process_file(uploaded_file)
     if data is not None:
-        with st.sidebar:
-            st.header("Filter Options")
+        # ---- FILTERS FOR TABLE & PLOTTING ----
+        st.sidebar.header("Filter Options")
 
-            # Update filter values based on uploaded data
-            time_span_options = ["All", "Last Week", "Last Two Weeks", "Last Month"]
-            time_span_filter = st.selectbox("Select Time Span", time_span_options, index=0)
-
-            date_filter = st.selectbox("Session Date", ["All"] + sorted(data["Session Date"].dt.strftime("%Y-%m-%d").unique().tolist()))
-            player_filter = st.selectbox("Player Tag", ["All"] + sorted(data["Player Tag"].unique().tolist()))
-            drill_filter = st.selectbox("Drill Name", ["All"] + sorted(data["Drill Name"].unique().tolist()) if "Drill Name" in data.columns else ["All"])
-            session_filter = st.selectbox("Session Name", ["All"] + sorted(data["Session Name"].unique().tolist()) if "Session Name" in data.columns else ["All"])
+        date_filter = st.sidebar.multiselect("Select Session Date", ["All"] + sorted(data["Session Date"].dt.strftime("%Y-%m-%d").unique().tolist()), default=["All"])
+        player_filter = st.sidebar.multiselect("Select Player(s)", ["All"] + sorted(data["Player Tag"].unique().tolist()), default=["All"])
+        drill_filter = st.sidebar.multiselect("Select Drill(s)", ["All"] + sorted(data["Drill Name"].unique().tolist()) if "Drill Name" in data.columns else ["All"], default=["All"])
+        session_filter = st.sidebar.multiselect("Select Session(s)", ["All"] + sorted(data["Session Name"].unique().tolist()) if "Session Name" in data.columns else ["All"], default=["All"])
 
         # Apply filtering
-        filtered_data = filter_data(data, time_span_filter, date_filter, player_filter, drill_filter, session_filter)
-        aggregated_data = aggregate_data(filtered_data)
+        filtered_data = filter_data(data, date_filter, player_filter, drill_filter, session_filter)
 
-        # Ensure only numerical columns (excluding "Player Tag") are selectable for plotting
-        plot_columns = [col for col in aggregated_data.columns if col != "Player Tag"]
+        # ---- TOGGLE FOR AGGREGATION ----
+        aggregate_toggle = st.sidebar.checkbox("Show Aggregated Data", value=True)
         
-        with st.sidebar:
-            st.header("Plot Settings")
-            chart_type = st.selectbox("Select Chart Type", ["Bar", "Line", "Scatter"])
-            y_axis = st.selectbox("Y-Axis", plot_columns)
-            color = st.text_input("Enter Hex Color Code", value="#007bff")  # Default blue
+        # Aggregation logic
+        if aggregate_toggle:
+            grouped_data = aggregate_data(filtered_data, ["Player Tag", "Session Date", "Tag ID"])
+        else:
+            grouped_data = filtered_data.copy()
 
-        st.subheader("Filtered Table")
-        st.dataframe(aggregated_data)
+        # ---- DISPLAY TABLE ----
+        st.subheader("Data Table")
+        st.dataframe(grouped_data)
 
-        plot_data(aggregated_data, y_axis, chart_type, color)
+        # ---- PLOT SETTINGS ----
+        st.sidebar.header("Plot Settings")
+
+        chart_type = st.sidebar.selectbox("Select Chart Type", ["Bar", "Line", "Scatter"])
+        y_axis = st.sidebar.selectbox("Y-Axis", [col for col in grouped_data.columns if col not in ["Player Tag", "Session Date", "Tag ID", "Drill Name", "Session Name", "MD", "Load/Min", "Duration", "Start Timestamp", "End Timestamp"]])
+        color = st.sidebar.text_input("Enter Hex Color Code", value="#007bff")  # Default blue
+
+        # ---- GENERATE PLOT ----
+        plot_data(grouped_data, "Tag ID", y_axis, chart_type, color, aggregate_toggle)
